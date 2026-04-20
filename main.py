@@ -67,7 +67,7 @@ class SNISpoofingProxy:
             logger=self.logger,
         )
         
-        # Initialize TLS Client
+        # Initialize TLS Client with combo support
         tls_config = TLSConfig(
             sni=self.config.sni,
             sni_list=self.config.sni_list,
@@ -75,6 +75,8 @@ class SNISpoofingProxy:
             verify_ssl=self.config.verify_ssl,
             alpn=self.config.alpn,
             connect_timeout=self.config.connect_timeout,
+            combo_list=self.config.combo_list,
+            use_combo_mode=self.config.use_combo_mode,
         )
         self.tls_client = TLSClient(tls_config, logger=self.logger)
         

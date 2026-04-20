@@ -1,0 +1,17 @@
+# Combo file format: SNI,IP
+# Each line: sni,ip
+# Lines starting with # are comments
+# Empty lines are ignored
+
+npmjs.com,104.17.135.117
+npmjs.com,104.17.134.117
+sourceforge.net,104.18.12.149
+sourceforge.net,104.18.13.149
+registry.npmjs.org,104.16.4.34
+registry.npmjs.org,104.16.0.34
+registry.npmjs.org,104.16.8.34
+hcaptcha.com,104.19.230.21
+hcaptcha.com,104.19.229.21
+dashboard.hcaptcha.com,104.19.230.21
+api.hcaptcha.com,104.19.229.21
+e7.c.lencr.org,104.18.21.213

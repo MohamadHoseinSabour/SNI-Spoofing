@@ -57,10 +57,10 @@ class ProxyConfig:
     pool_size: int = 5
     max_retries: int = 5
     
-    # Timeout settings (seconds)
-    connect_timeout: int = 10
-    read_timeout: int = 300
-    write_timeout: int = 30
+    # Timeout settings (seconds) - increased for combo mode
+    connect_timeout: int = 30
+    read_timeout: int = 600
+    write_timeout: int = 60
     
     # Buffer settings
     buffer_size: int = 32768
@@ -104,8 +104,13 @@ class ProxyConfig:
     connection_mode: str = "on_demand"  # "on_demand" or "persistent"
     persistent_reconnect_delay: int = 5
     
+    # Combo mode (SNI + IP pairs)
+    combo_file: Optional[str] = None
+    combo_list: list[tuple[str, str]] = field(default_factory=list)
+    use_combo_mode: bool = False
+    
     def __post_init__(self):
-        """Load SNI list from file if specified."""
+        """Load SNI list and combos from files if specified."""
         if self.sni_file and os.path.exists(self.sni_file):
             with open(self.sni_file, 'r') as f:
                 self.sni_list = [line.strip() for line in f if line.strip()]
@@ -114,6 +119,35 @@ class ProxyConfig:
         if self.cf_ip_file and os.path.exists(self.cf_ip_file):
             with open(self.cf_ip_file, 'r') as f:
                 self.cf_ips = [line.strip() for line in f if line.strip()]
+        
+        # Load combo list from file if specified
+        if self.combo_file and os.path.exists(self.combo_file):
+            self.combo_list = self._load_combos(self.combo_file)
+            if self.combo_list:
+                self.use_combo_mode = True
+    
+    def _load_combos(self, filepath: str) -> list[tuple[str, str]]:
+        """Load SNI+IP combos from file.
+        
+        Format: sni,ip (one per line)
+        Lines starting with # are ignored
+        """
+        combos = []
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    parts = line.split(',')
+                    if len(parts) >= 2:
+                        sni = parts[0].strip()
+                        ip = parts[1].strip()
+                        if sni and ip:
+                            combos.append((sni, ip))
+        except Exception as e:
+            print(f"Error loading combos from {filepath}: {e}")
+        return combos
     
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -244,6 +278,13 @@ Examples:
         help="File containing list of Cloudflare IPs (one per line)"
     )
     
+    # Combo mode (SNI + IP pairs)
+    parser.add_argument(
+        "--combo-file",
+        default=None,
+        help="File containing SNI,IP combos (format: sni,ip per line)"
+    )
+    
     # Connection pool settings
     parser.add_argument(
         "--pool-size",
@@ -258,25 +299,25 @@ Examples:
         help="Maximum retry attempts (default: 5)"
     )
     
-    # Timeout settings
+    # Timeout settings - increased for combo mode stability
     parser.add_argument(
         "--timeout",
         type=int,
-        default=10,
+        default=30,
         dest="connect_timeout",
-        help="Connection timeout in seconds (default: 10)"
+        help="Connection timeout in seconds (default: 30)"
     )
     parser.add_argument(
         "--read-timeout",
         type=int,
-        default=300,
-        help="Read timeout in seconds (default: 300)"
+        default=600,
+        help="Read timeout in seconds (default: 600)"
     )
     parser.add_argument(
         "--write-timeout",
         type=int,
-        default=30,
-        help="Write timeout in seconds (default: 30)"
+        default=60,
+        help="Write timeout in seconds (default: 60)"
     )
     
     # Buffer settings
@@ -384,6 +425,8 @@ Examples:
                 cli_config["sni_file"] = value
             elif key == "cf_ip_file":
                 cli_config["cf_ip_file"] = value
+            elif key == "combo_file":
+                cli_config["combo_file"] = value
             elif key == "pool_size":
                 cli_config["pool_size"] = value
             elif key == "max_retries":

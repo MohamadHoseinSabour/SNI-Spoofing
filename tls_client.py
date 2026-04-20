@@ -34,9 +34,13 @@ class TLSConfig:
     # Custom SSL context
     ssl_context: Optional[ssl.SSLContext] = None
     
-    # Timeouts
-    connect_timeout: float = 10.0
-    handshake_timeout: float = 15.0
+    # Timeouts - increased for combo mode
+    connect_timeout: float = 30.0
+    handshake_timeout: float = 45.0
+    
+    # Combo mode (SNI + IP pairs)
+    combo_list: list[tuple[str, str]] = None
+    use_combo_mode: bool = False
     
     def __post_init__(self):
         if self.sni_list is None:
@@ -65,6 +69,7 @@ class TLSClient:
     - TLS 1.3 with modern cipher suites
     - ALPN support (h2, http/1.1)
     - SNI rotation and randomization
+    - Combo mode (SNI + IP pairs) for stable connections
     - Custom SSL context configuration
     - Connection timeout handling
     """
@@ -88,6 +93,34 @@ class TLSClient:
         self.logger = logger
         self._ssl_context: Optional[ssl.SSLContext] = None
         self._current_sni: str = config.sni
+        self._current_ip: str = ""
+        
+        # Combo mode support
+        self._combo_index: int = 0
+        self._combo_list: list[tuple[str, str]] = config.combo_list if config.combo_list else []
+        self._use_combo_mode: bool = config.use_combo_mode
+        
+        if self._use_combo_mode and self._combo_list:
+            # Shuffle combos for random selection
+            random.shuffle(self._combo_list)
+    
+    def get_combo(self) -> tuple[str, str]:
+        """Get current SNI+IP combo."""
+        if self._use_combo_mode and self._combo_list:
+            return self._combo_list[self._combo_index % len(self._combo_list)]
+        return (self._current_sni, self._current_ip)
+    
+    def rotate_combo(self) -> tuple[str, str]:
+        """Rotate to next combo (random selection)."""
+        if self._use_combo_mode and self._combo_list:
+            self._combo_index = random.randint(0, len(self._combo_list) - 1)
+            sni, ip = self._combo_list[self._combo_index]
+            self._current_sni = sni
+            self._current_ip = ip
+            if self.logger:
+                self.logger.debug(f"Rotated combo to: SNI={sni}, IP={ip}")
+            return (sni, ip)
+        return (self._current_sni, self._current_ip)
         
     def _create_ssl_context(self) -> ssl.SSLContext:
         """Create SSL context with custom configuration."""
@@ -152,6 +185,7 @@ class TLSClient:
         host: str,
         port: int = 443,
         local_addr: Optional[tuple] = None,
+        use_combo: bool = False,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, ssl.SSLObject]:
         """
         Establish TLS connection to target.
@@ -160,6 +194,7 @@ class TLSClient:
             host: Target hostname/IP
             port: Target port
             local_addr: Optional local address to bind to
+            use_combo: If True, use SNI+IP combo mode
         
         Returns:
             Tuple of (reader, writer, ssl_object)
@@ -167,15 +202,21 @@ class TLSClient:
         # Create fresh SSL context for this connection
         ctx = self._create_ssl_context()
         
-        # Configure SNI
-        self._current_sni = self._get_next_sni()
+        # Configure SNI - use combo if in combo mode
+        if use_combo and self._use_combo_mode and self._combo_list:
+            sni, ip = self.rotate_combo()
+            connect_host = ip if ip else host  # Use combo IP if available
+            self._current_ip = ip
+        else:
+            self._current_sni = self._get_next_sni()
+            connect_host = host
         
         # Wrap socket with SSL
         try:
             # Use asyncio to connect
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(
-                    host=host,
+                    host=connect_host,
                     port=port,
                     ssl=ctx,
                     server_hostname=self._current_sni,
@@ -189,7 +230,7 @@ class TLSClient:
             
             if self.logger:
                 self.logger.log_tls_handshake(
-                    host,
+                    connect_host,
                     self._current_sni,
                     True,
                     protocol=ssl_obj.version() if ssl_obj else "unknown"
@@ -199,17 +240,17 @@ class TLSClient:
             
         except asyncio.TimeoutError as e:
             if self.logger:
-                self.logger.log_tls_handshake(host, self._current_sni, False, error="timeout")
-            raise TimeoutError(f"Connection timeout to {host}:{port}") from e
+                self.logger.log_tls_handshake(connect_host, self._current_sni, False, error="timeout")
+            raise TimeoutError(f"Connection timeout to {connect_host}:{port}") from e
             
         except ssl.SSLError as e:
             if self.logger:
-                self.logger.log_tls_handshake(host, self._current_sni, False, error=str(e))
+                self.logger.log_tls_handshake(connect_host, self._current_sni, False, error=str(e))
             raise
             
         except Exception as e:
             if self.logger:
-                self.logger.log_tls_handshake(host, self._current_sni, False, error=str(e))
+                self.logger.log_tls_handshake(connect_host, self._current_sni, False, error=str(e))
             raise
     
     async def connect_with_retry(

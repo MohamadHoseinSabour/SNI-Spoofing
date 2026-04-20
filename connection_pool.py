@@ -171,6 +171,7 @@ class ConnectionPool:
         ip: str,
         port: int,
         sni: str,
+        use_combo: bool = False,
     ) -> Optional[PooledConnection]:
         """
         Create a new TLS connection.
@@ -179,6 +180,7 @@ class ConnectionPool:
             ip: Target IP
             port: Target port
             sni: SNI hostname
+            use_combo: Use combo mode for connection
         
         Returns:
             New PooledConnection or None on failure
@@ -189,7 +191,7 @@ class ConnectionPool:
             return None
         
         try:
-            reader, writer, ssl_obj = await self._tls_client.connect(ip, port)
+            reader, writer, ssl_obj = await self._tls_client.connect(ip, port, use_combo=use_combo)
             
             # Configure socket options
             if self.tcp_nodelay:
