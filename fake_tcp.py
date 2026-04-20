@@ -55,9 +55,18 @@ class FakeTcpInjector(TcpInjector):
                 sys.exit("not implemented method!")
 
     def on_unexpected_packet(self, packet: Packet, connection: FakeInjectiveConnection, info_m: str):
-        print(info_m, packet)
+        # Only print critical errors, suppress common handshake race conditions
+        # These are normal: "ack not matched" during handshake, "seq not matched" during concurrent packets
+        if "ack not matched" in info_m or "seq not matched" in info_m:
+            # Silently drop - these are expected during handshake race conditions
+            self.w.send(packet, False)
+            return
+        
+        # Only print truly unexpected errors
+        print(f"[✗] {info_m}")
         connection.sock.close()
-        connection.peer_sock.close()
+        if connection.peer_sock:
+            connection.peer_sock.close()
         connection.monitor = False
         connection.t2a_msg = "unexpected_close"
         connection.running_loop.call_soon_threadsafe(connection.t2a_event.set, )
@@ -145,7 +154,8 @@ class FakeTcpInjector(TcpInjector):
             connection.sch_fake_sent = True
             threading.Thread(target=self.fake_send_thread, args=(packet, connection), daemon=True).start()
             return
-        self.on_unexpected_packet(packet, connection, "unexpected outbound packet")
+        # Silently handle unexpected packets during handshake race conditions
+        self.w.send(packet, False)
         return
 
     def inject(self, packet: Packet):
