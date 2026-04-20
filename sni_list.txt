@@ -1,0 +1,14 @@
+# SNI List for SNI-Spoofing Proxy
+# One SNI hostname per line
+# The proxy will randomly select from this list
+
+www.cloudflare.com
+dash.cloudflare.com
+api.cloudflare.com
+blog.cloudflare.com
+developers.cloudflare.com
+cloudflare.com
+ssl.cloudflare.com
+customers.cloudflare.com
+support.cloudflare.com
+status.cloudflare.com

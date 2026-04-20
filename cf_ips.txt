@@ -1,0 +1,33 @@
+# Cloudflare IP Ranges for SNI-Spoofing Proxy
+# One IP or CIDR per line
+# The proxy will test these IPs and select the fastest one
+
+# Main Cloudflare ranges
+104.16.0.0/12
+172.64.0.0/12
+172.65.0.0/12
+172.66.0.0/12
+172.67.0.0/12
+172.68.0.0/12
+172.69.0.0/12
+172.70.0.0/12
+172.71.0.0/12
+
+# Newer ranges
+188.114.96.0/20
+188.114.97.0/20
+188.114.98.0/20
+188.114.99.0/20
+
+# Individual well-known IPs (optional)
+104.16.0.0
+104.16.1.0
+104.16.2.0
+104.17.0.0
+104.17.1.0
+172.64.0.0
+172.65.0.0
+172.66.0.0
+172.67.0.0
+188.114.96.0
+188.114.97.0

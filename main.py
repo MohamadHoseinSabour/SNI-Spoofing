@@ -1,52 +1,339 @@
+"""
+SNI-Spoofing Proxy - Main Entry Point
+Refactored version with intelligent IP management, connection pooling, and health monitoring.
+"""
+
 import asyncio
 import os
-import socket
-import sys
-import traceback
-import threading
-import json
 import signal
-import logging
-from datetime import datetime
+import sys
+import time
 from typing import Optional
 
-# from utils.proxy_protocols import parse_vless_protocol
-from utils.network_tools import get_default_interface_ipv4
-from utils.packet_templates import ClientHelloMaker
-from fake_tcp import FakeInjectiveConnection, FakeTcpInjector
+# Import our modules
+from config import parse_arguments, ProxyConfig, create_default_config_file
+from logger import get_logger, StructuredLogger
+from ip_manager import IPManager
+from tls_client import TLSClient, TLSConfig
+from connection_pool import ConnectionPool, ConnectionManager
+from health_monitor import HealthMonitor, PoolHealthMonitor, MetricsCollector
+from proxy_server import ProxyServer
 
 
-# Configure logging
-def setup_logging(level: str = "info"):
-    """Setup logging configuration"""
-    numeric_level = getattr(logging, level.upper(), logging.INFO)
-    logging.basicConfig(
-        level=numeric_level,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+class SNISpoofingProxy:
+    """
+    Main application class coordinating all components.
+    """
+    
+    def __init__(self, config: ProxyConfig):
+        self.config = config
+        self.logger: Optional[StructuredLogger] = None
+        self.ip_manager: Optional[IPManager] = None
+        self.tls_client: Optional[TLSClient] = None
+        self.connection_pool: Optional[ConnectionPool] = None
+        self.connection_manager: Optional[ConnectionManager] = None
+        self.health_monitor: Optional[HealthMonitor] = None
+        self.proxy_server: Optional[ProxyServer] = None
+        self.metrics: Optional[MetricsCollector] = None
+        
+        # State
+        self._is_running = False
+        self._start_time = 0
+    
+    async def initialize(self):
+        """Initialize all components."""
+        # Setup logger
+        self.logger = get_logger(
+            name="SNI-Spoofing",
+            verbose=self.config.verbose,
+            log_file=self.config.log_file
+        )
+        
+        self.logger.info(
+            "Initializing SNI-Spoofing Proxy",
+            version="2.0.0",
+            verbose_level=self.config.verbose
+        )
+        
+        # Initialize IP Manager
+        self.ip_manager = IPManager(
+            ip_ranges=self.config.cf_ips,
+            port=self.config.remote_port,
+            timeout=self.config.connect_timeout,
+            max_concurrent_tests=10,
+            circuit_breaker_threshold=self.config.circuit_breaker_threshold,
+            circuit_breaker_window=self.config.circuit_breaker_window,
+            circuit_breaker_cooldown=self.config.circuit_breaker_cooldown,
+            logger=self.logger,
+        )
+        
+        # Initialize TLS Client
+        tls_config = TLSConfig(
+            sni=self.config.sni,
+            sni_list=self.config.sni_list,
+            tls_version=self.config.tls_version,
+            verify_ssl=self.config.verify_ssl,
+            alpn=self.config.alpn,
+            connect_timeout=self.config.connect_timeout,
+        )
+        self.tls_client = TLSClient(tls_config, logger=self.logger)
+        
+        # Initialize Connection Pool
+        self.connection_pool = ConnectionPool(
+            max_size=self.config.pool_size,
+            min_size=1,
+            max_idle_time=60.0,
+            connection_timeout=self.config.connect_timeout,
+            read_timeout=self.config.read_timeout,
+            write_timeout=self.config.write_timeout,
+            tcp_nodelay=self.config.tcp_nodelay,
+            keepalive=self.config.keepalive,
+            keepalive_idle=self.config.keepalive_idle,
+            keepalive_interval=self.config.keepalive_interval,
+            keepalive_count=self.config.keepalive_count,
+            logger=self.logger,
+        )
+        
+        # Initialize Connection Manager
+        self.connection_manager = ConnectionManager(
+            ip_manager=self.ip_manager,
+            tls_client=self.tls_client,
+            pool=self.connection_pool,
+            max_retries=self.config.max_retries,
+            retry_delays=self.config.retry_delays,
+            logger=self.logger,
+        )
+        
+        # Initialize Health Monitor
+        self.health_monitor = PoolHealthMonitor(
+            connection_pool=self.connection_pool,
+            check_interval=self.config.health_check_interval,
+            timeout=self.config.health_check_timeout,
+            max_consecutive_failures=3,
+            logger=self.logger,
+        )
+        
+        # Set up recovery callback
+        async def on_unhealthy():
+            self.logger.warning("Connection unhealthy, attempting reconnection...")
+            await self.connection_manager.reconnect()
+        
+        async def on_recovered():
+            self.logger.info("Connection recovered")
+        
+        self.health_monitor.on_unhealthy = on_unhealthy
+        self.health_monitor.on_recovered = on_recovered
+        
+        # Initialize Metrics Collector
+        self.metrics = MetricsCollector(logger=self.logger)
+        
+        # Initialize Proxy Server
+        self.proxy_server = ProxyServer(
+            host=self.config.local_host,
+            port=self.config.local_port,
+            buffer_size=self.config.buffer_size,
+            connection_manager=self.connection_manager,
+            logger=self.logger,
+        )
+        
+        self.logger.info("Initialization complete")
+    
+    async def start(self):
+        """Start the proxy."""
+        if self._is_running:
+            return
+        
+        self._is_running = True
+        self._start_time = time.time()
+        
+        self.logger.info(
+            "Starting SNI-Spoofing Proxy",
+            local=f"{self.config.local_host}:{self.config.local_port}",
+            pool_size=self.config.pool_size
+        )
+        
+        # Start health monitor
+        await self.health_monitor.start()
+        
+        # Start proxy server
+        await self.proxy_server.start()
+        
+        # Initial connection (if not on-demand)
+        if self.config.connection_mode == "persistent":
+            self.logger.info("Establishing persistent connection...")
+            await self.connection_manager.connect()
+        
+        self.logger.info("Proxy is running. Press Ctrl+C to stop.")
+    
+    async def stop(self):
+        """Stop the proxy gracefully."""
+        self.logger.info("Stopping SNI-Spoofing Proxy...")
+        
+        # Stop accepting new connections
+        if self.proxy_server:
+            await self.proxy_server.stop()
+        
+        # Stop health monitor
+        if self.health_monitor:
+            await self.health_monitor.stop()
+        
+        # Close connection manager
+        if self.connection_manager:
+            await self.connection_manager.close()
+        
+        # Print final stats
+        uptime = time.time() - self._start_time
+        self.logger.info(f"Total uptime: {uptime:.1f}s")
+        
+        if self.metrics:
+            await self.metrics.print_summary()
+        
+        if self.logger:
+            self.logger.close()
+        
+        self._is_running = False
+    
+    async def run_forever(self):
+        """Run the proxy until stopped."""
+        await self.start()
+        
+        # Keep running
+        try:
+            while self._is_running:
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            pass
+
+
+async def benchmark_ips(config: ProxyConfig, logger: StructuredLogger):
+    """Run IP benchmark mode."""
+    logger.info("Starting IP benchmark...")
+    
+    ip_manager = IPManager(
+        ip_ranges=config.cf_ips,
+        port=config.remote_port,
+        timeout=5.0,
+        max_concurrent_tests=10,
+        logger=logger,
     )
-    return logging.getLogger(__name__)
+    
+    results = await ip_manager.benchmark_ips(max_ips=50)
+    
+    print("\n" + "=" * 70)
+    print("BENCHMARK RESULTS - Cloudflare IPs (sorted by latency)")
+    print("=" * 70)
+    print(f"{'IP':<20} {'Latency (ms)':<15} {'Status':<10}")
+    print("-" * 70)
+    
+    for i, result in enumerate(results[:20], 1):
+        ip = result['ip']
+        latency = result.get('latency')
+        status = result['status']
+        
+        latency_str = f"{latency:.2f}" if latency else "TIMEOUT"
+        print(f"{ip:<20} {latency_str:<15} {status:<10}")
+    
+    print("-" * 70)
+    print(f"Tested {len(results)} IPs total")
+    print("=" * 70 + "\n")
+    
+    # Show top 5 recommendations
+    working = [r for r in results if r.get('latency')]
+    if working:
+        print("Top 5 recommended IPs:")
+        for i, r in enumerate(working[:5], 1):
+            print(f"  {i}. {r['ip']} ({r['latency']:.2f}ms)")
+        print()
 
 
-logger = setup_logging()
-
-
-def get_exe_dir():
-    """Returns the directory where the .exe (or script) is located."""
-    if getattr(sys, 'frozen', False):
-        # Running as a PyInstaller EXE
-        return os.path.dirname(sys.executable)
+async def test_connectivity(config: ProxyConfig, logger: StructuredLogger):
+    """Test connectivity mode."""
+    logger.info("Testing connectivity...")
+    
+    ip_manager = IPManager(
+        ip_ranges=config.cf_ips,
+        port=config.remote_port,
+        timeout=config.connect_timeout,
+        logger=logger,
+    )
+    
+    # Find best IP
+    best_ip = await ip_manager.find_best_ip(max_to_test=20)
+    
+    if best_ip:
+        logger.info(
+            "Connectivity test PASSED",
+            ip=best_ip.ip,
+            latency=f"{best_ip.latency:.2f}ms"
+        )
+        print(f"\nBest IP: {best_ip.ip}")
+        print(f"Latency: {best_ip.latency:.2f}ms")
+        return 0
     else:
-        # Running as a normal Python script
-        return os.path.dirname(os.path.abspath(__file__))
+        logger.error("Connectivity test FAILED - no working IPs found")
+        return 1
 
 
-# Build the path to config.json
-config_path = os.path.join(get_exe_dir(), 'config.json')
+def setup_signal_handlers(proxy: SNISpoofingProxy, loop: asyncio.AbstractEventLoop):
+    """Setup signal handlers for graceful shutdown."""
+    
+    def signal_handler(sig):
+        print("\n\nShutdown signal received, stopping...")
+        loop.create_task(proxy.stop())
+    
+    # Windows doesn't support SIGTERM, use SIGINT
+    if sys.platform == "win32":
+        signal.signal(signal.SIGINT, lambda s, f: signal_handler(s))
+    else:
+        signal.signal(signal.SIGTERM, lambda s, f: signal_handler(s))
+        signal.signal(signal.SIGINT, lambda s, f: signal_handler(s))
 
-# Load the config
-with open(config_path, 'r') as f:
-    config = json.load(f)
+
+async def async_main():
+    """Async main entry point."""
+    # Parse arguments
+    config = parse_arguments()
+    
+    # Create proxy instance
+    proxy = SNISpoofingProxy(config)
+    
+    # Setup signal handlers
+    loop = asyncio.get_event_loop()
+    setup_signal_handlers(proxy, loop)
+    
+    # Handle special modes
+    if config.benchmark_mode:
+        # Initialize logger for benchmark
+        logger = get_logger("SNI-Spoofing", config.verbose, config.log_file)
+        await benchmark_ips(config, logger)
+        logger.close()
+        return
+    
+    if config.test_mode:
+        # Initialize logger for test
+        logger = get_logger("SNI-Spoofing", config.verbose, config.log_file)
+        exit_code = await test_connectivity(config, logger)
+        logger.close()
+        sys.exit(exit_code)
+    
+    # Normal mode: run the proxy
+    await proxy.initialize()
+    await proxy.run_forever()
+
+
+def main():
+    """Main entry point."""
+    try:
+        asyncio.run(async_main())
+    except KeyboardInterrupt:
+        print("\nInterrupted by user")
+    except Exception as e:
+        print(f"Fatal error: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
 
 # Core configuration
 LISTEN_HOST = config.get("LISTEN_HOST", "0.0.0.0")
