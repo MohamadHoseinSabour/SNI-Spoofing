@@ -6,6 +6,7 @@
 همچنین باید زمان تایم اوت رو بیشتری کنی
 
 
+<<<<<<< HEAD
 https://github.com/MohamadHoseinSabour/SNI-Spoofing
 
 
@@ -15,3 +16,6 @@ https://github.com/MohamadHoseinSabour/SNI-Spoofing
 
 
 بر اساس این فایل تست فهمیدیم که این کمبو بدون فیلتر کار میکنه و فقط باید به اینا وصل شد و یه اتصال پایدار داشت تا کانفیگ ها بهض وصل بشن
+=======
+USDT (TRC20): TU5gKvKqcXPn8itp1DouBCwcqGHMemBm8o
+>>>>>>> parent of 13b78cf (Add Telegram links to README)
